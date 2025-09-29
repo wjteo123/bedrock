@@ -18,6 +18,7 @@ from agno.knowledge.knowledge import Knowledge
 from agno.vectordb.qdrant import Qdrant 
 from agno.knowledge.embedder.aws_bedrock import AwsBedrockEmbedder  
 import asyncio
+import json
 
 load_dotenv()
 
@@ -73,7 +74,6 @@ class AgnoAISystem:
         """Initialize Knowledge Base with Qdrant and AWS Titan Embeddings"""
         print("🧠 Setting up Knowledge Base with Qdrant and AWS Titan Embeddings...")
         
-        # Embedding model: Amazon Titan Text Embeddings V2
         embedder = AwsBedrockEmbedder(
             id="amazon.titan-embed-text-v2:0",
             aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
@@ -81,7 +81,6 @@ class AgnoAISystem:
             aws_region=os.getenv("AWS_REGION", "us-west-2")
         )
         
-        # Qdrant Vector DB (assume running locally or provide URL/API key)
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
         qdrant_api_key = os.getenv("QDRANT_API_KEY") 
         
@@ -92,11 +91,10 @@ class AgnoAISystem:
             embedder=embedder
         )
         
-        # Knowledge Base using Mongo for contents and Qdrant for vectors
         self.knowledge = Knowledge(
             name="AgnoKnowledgeBase",
             description="Knowledge base for AI agent system with Qdrant and AWS embeddings",
-            contents_db=self.db,  # Using MongoDB for content storage
+            contents_db=self.db,
             vector_db=vector_db
         )
         
@@ -105,12 +103,11 @@ class AgnoAISystem:
         
     def _initialize_agents(self) -> Dict[str, Agent]:
         """Initialize all specialized agents using your legal AI pattern."""
-        # Added knowledge integration
         common_config = {
             "model": self.BASE_MODEL,
             "db": self.db,
-            "knowledge": self.knowledge,  # Added knowledge base
-            "search_knowledge": True,  # Enable Agentic RAG
+            "knowledge": self.knowledge,
+            "search_knowledge": True,
             "add_history_to_context": True,
             "num_history_runs": 5,
             "enable_user_memories": True,
@@ -178,7 +175,7 @@ class AgnoAISystem:
             model=self.BASE_MODEL,
             members=list(agents.values()),
             db=self.db,
-            knowledge=self.knowledge,  # Added knowledge to team
+            knowledge=self.knowledge,
             search_knowledge=True,
             markdown=True,
             instructions=(
@@ -255,7 +252,7 @@ async def websocket_endpoint(websocket: WebSocket):
         attached_file = data.get('attached_file')
         
         if not agent_type or not query:
-            await websocket.send_text("Error: Missing agent_type or query")
+            await websocket.send_json({"type": "error", "content": "Missing agent_type or query"})
             await websocket.close()
             return
         
@@ -276,16 +273,17 @@ async def websocket_endpoint(websocket: WebSocket):
         elif agent_type in system.agents:
             agent = system.agents[agent_type]
         else:
-            await websocket.send_text("Error: Invalid agent_type")
+            await websocket.send_json({"type": "error", "content": "Invalid agent_type"})
             await websocket.close()
             return
         
-        # Run agent and stream response
+        # Send thinking status
+        await websocket.send_json({"type": "thinking", "content": "Processing your request..."})
+        
         loop = asyncio.get_running_loop()
         
         def run_agent():
             try:
-                # Use agent.run() to get the response object
                 response = agent.run(query, user_id=session_id, stream=False)
                 return response.content if response else "No response generated"
             except Exception as e:
@@ -294,11 +292,15 @@ async def websocket_endpoint(websocket: WebSocket):
         # Run in executor to avoid blocking
         response_text = await loop.run_in_executor(None, run_agent)
         
-        # Stream the response character by character for better UX
-        for char in response_text:
-            await websocket.send_text(char)
-            await asyncio.sleep(0.01)  # Small delay for streaming effect
+        # Send complete response in chunks (word by word for smooth streaming)
+        words = response_text.split(' ')
+        for i, word in enumerate(words):
+            chunk = word + (' ' if i < len(words) - 1 else '')
+            await websocket.send_json({"type": "chunk", "content": chunk})
+            await asyncio.sleep(0.03)  # Smooth streaming delay
         
+        # Send completion signal
+        await websocket.send_json({"type": "done"})
         await websocket.close()
     
     except WebSocketDisconnect:
@@ -306,7 +308,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket error: {str(e)}")
         try:
-            await websocket.send_text(f"Error: {str(e)}")
+            await websocket.send_json({"type": "error", "content": str(e)})
             await websocket.close()
         except:
             pass
