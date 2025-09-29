@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, FileText, Download, Loader2, Bot, User, X, ChevronRight } from 'lucide-react';
+import { Send, Paperclip, FileText, Download, Loader2, Bot, User, X, ChevronDown, ChevronRight, Sparkles } from 'lucide-react';
 
 const AgnoChat = () => {
   const [messages, setMessages] = useState([]);
@@ -9,6 +9,7 @@ const AgnoChat = () => {
   const [uploadedFile, setUploadedFile] = useState(null);
   const [artifacts, setArtifacts] = useState([]);
   const [showArtifacts, setShowArtifacts] = useState(false);
+  const [expandedThinking, setExpandedThinking] = useState({});
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const wsRef = useRef(null);
@@ -67,6 +68,13 @@ const AgnoChat = () => {
     }
   };
 
+  const toggleThinking = (messageId) => {
+    setExpandedThinking(prev => ({
+      ...prev,
+      [messageId]: !prev[messageId]
+    }));
+  };
+
   const handleSend = async () => {
     if (!input.trim() && !uploadedFile) return;
 
@@ -80,10 +88,14 @@ const AgnoChat = () => {
     setInput('');
     setIsLoading(true);
 
+    const messageId = Date.now();
     const assistantMessage = {
+      id: messageId,
       role: 'assistant',
       content: '',
-      isStreaming: true
+      thinking: '',
+      isStreaming: true,
+      showThinking: false
     };
     setMessages(prev => [...prev, assistantMessage]);
 
@@ -101,22 +113,64 @@ const AgnoChat = () => {
       };
 
       ws.onmessage = (event) => {
-        const chunk = event.data;
-        setMessages(prev => {
-          const newMessages = [...prev];
-          const lastMsg = newMessages[newMessages.length - 1];
-          if (lastMsg.role === 'assistant') {
-            lastMsg.content += chunk;
+        try {
+          const data = JSON.parse(event.data);
+          
+          if (data.type === 'thinking') {
+            // Update thinking content
+            setMessages(prev => {
+              const newMessages = [...prev];
+              const lastMsg = newMessages[newMessages.length - 1];
+              if (lastMsg.role === 'assistant' && lastMsg.id === messageId) {
+                return prev.map((msg, idx) => 
+                  idx === prev.length - 1 
+                    ? { ...msg, thinking: data.content, showThinking: true }
+                    : msg
+                );
+              }
+              return prev;
+            });
+          } else if (data.type === 'chunk') {
+            // Append content chunk - CRITICAL: use functional update to prevent duplication
+            setMessages(prev => {
+              const lastMsg = prev[prev.length - 1];
+              if (lastMsg.role === 'assistant' && lastMsg.id === messageId) {
+                return prev.map((msg, idx) => 
+                  idx === prev.length - 1 
+                    ? { ...msg, content: msg.content + data.content, showThinking: false }
+                    : msg
+                );
+              }
+              return prev;
+            });
+          } else if (data.type === 'done') {
+            // Mark as complete
+            setMessages(prev => {
+              return prev.map((msg, idx) => 
+                idx === prev.length - 1 && msg.role === 'assistant' && msg.id === messageId
+                  ? { ...msg, isStreaming: false }
+                  : msg
+              );
+            });
+          } else if (data.type === 'error') {
+            setMessages(prev => {
+              return prev.map((msg, idx) => 
+                idx === prev.length - 1 && msg.role === 'assistant' && msg.id === messageId
+                  ? { ...msg, content: `Error: ${data.content}`, isStreaming: false }
+                  : msg
+              );
+            });
           }
-          return newMessages;
-        });
+        } catch (e) {
+          console.error('Error parsing WebSocket message:', e);
+        }
       };
 
       ws.onclose = () => {
         setMessages(prev => {
           const newMessages = [...prev];
           const lastMsg = newMessages[newMessages.length - 1];
-          if (lastMsg.role === 'assistant') {
+          if (lastMsg.role === 'assistant' && lastMsg.id === messageId) {
             lastMsg.isStreaming = false;
           }
           return newMessages;
@@ -232,13 +286,37 @@ const AgnoChat = () => {
                     : 'bg-white text-slate-800 border border-slate-200'
                 }`}
               >
+                {/* Thinking Section (Claude-style) */}
+                {msg.role === 'assistant' && msg.thinking && (
+                  <div className="mb-3 pb-3 border-b border-slate-200">
+                    <button
+                      onClick={() => toggleThinking(msg.id)}
+                      className="flex items-center gap-2 text-sm text-slate-600 hover:text-slate-800 transition-colors w-full"
+                    >
+                      {expandedThinking[msg.id] ? (
+                        <ChevronDown size={16} />
+                      ) : (
+                        <ChevronRight size={16} />
+                      )}
+                      <Sparkles size={14} className="text-purple-500" />
+                      <span className="font-medium">Thinking...</span>
+                    </button>
+                    {expandedThinking[msg.id] && (
+                      <div className="mt-2 pl-6 text-sm text-slate-600 italic">
+                        {msg.thinking}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {msg.file && (
                   <div className="flex items-center gap-2 text-sm mb-2 pb-2 border-b border-indigo-400">
                     <Paperclip size={14} />
                     <span>{msg.file}</span>
                   </div>
                 )}
-                <div className="prose prose-sm max-w-none">
+                
+                <div className="prose prose-sm max-w-none whitespace-pre-wrap">
                   {msg.content}
                   {msg.isStreaming && (
                     <span className="inline-block w-2 h-4 bg-slate-400 ml-1 animate-pulse" />
