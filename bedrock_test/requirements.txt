@@ -1,0 +1,8 @@
+boto3
+agno
+requests
+pymongo
+qdrant-client
+aioboto3
+reportlab
+fastapi[standard]
